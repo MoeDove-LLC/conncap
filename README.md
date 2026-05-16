@@ -1,259 +1,214 @@
-# conncap — Connection Capacity Tester
+# conncap
 
-A TCP + UDP concurrent connection limit testing tool for home broadband. Tests the maximum number of concurrent connections your ISP/router allows. Supports IPv4 and IPv6 (dual-stack).
+语言 / Language: **简体中文** | [English](README.en.md)
 
-## Architecture
+conncap 是一个用于测试家庭宽带、路由器或运营商侧并发连接能力的 TCP/UDP 连接数测试工具。它由服务端和客户端组成，支持 IPv4/IPv6 自动检测，也可以强制使用 IPv4 或 IPv6。
 
-```
-[Home Network Client]  ──massive TCP/UDP connections──>  [Public VPS Server]
-```
+## 工作方式
 
-- **Server**: Deploy on a VPS with a public IP. Listens on TCP/UDP ports, tracks live connection count and peaks, exposes an HTTP `/status` endpoint.
-- **Client**: Run on your home network. Spawns massive concurrent connections to the server, reports success/failure/peak counts.
-
-## Downloads
-
-Prebuilt binaries in `build/`:
-
-| OS | Arch | File |
-|----|------|------|
-| Linux | amd64 | `conncap-server-linux-amd64` / `conncap-client-linux-amd64` |
-| Linux | arm64 | `conncap-server-linux-arm64` / `conncap-client-linux-arm64` |
-| Linux | armv5+ | `conncap-server-linux-arm5` / `conncap-client-linux-arm5` |
-| Linux | mips (BE, softfloat) | `conncap-server-linux-mips` / `conncap-client-linux-mips` |
-| Linux | mipsel (LE, softfloat) | `conncap-server-linux-mipsel` / `conncap-client-linux-mipsel` |
-| macOS | arm64 | `conncap-server-darwin-arm64` / `conncap-client-darwin-arm64` |
-| Windows | amd64 | `conncap-server-windows-amd64.exe` / `conncap-client-windows-amd64.exe` |
-
-All binaries are statically linked with zero runtime dependencies.
-
-## Quick Start
-
-### 1. Start the server (on your VPS)
-
-```bash
-./conncap-server-linux-amd64 --tcp-port 8888 --udp-port 8888 --stats-port 8889
+```text
+家庭网络客户端  ->  大量 TCP/UDP 会话  ->  公网 VPS 服务端
 ```
 
-Check status: `curl http://<vps_ip>:8889/status`
-
-### 2. Run the client (on your home network)
-
-```bash
-# TCP only (default)
-./conncap-client-linux-amd64 -s <vps_ip>
-
-# UDP only
-./conncap-client-linux-amd64 -s <vps_ip> -u
-
-# TCP + UDP, IPv6
-./conncap-client-linux-amd64 -s <vps_ipv6> -t -u -6
-```
-
-## Server Flags
-
-```
-Usage: server [flags]
-
-  -host string       Listen address (default "::")
-  -tcp-port int      TCP port, 0 to disable (default 8888)
-  -udp-port int      UDP port, 0 to disable (default 8888)
-  -stats-port int    HTTP status port, 0 to disable (default 8889)
-  -interval int      Stats log interval in seconds (default 5)
-  -v6-only           Listen IPv6 only (default dual-stack 0.0.0.0 + ::)
-```
-
-`/status` response:
-```json
-{"tcp_current":1234,"tcp_peak":2345,"udp_current":567,"udp_peak":890,
- "close_normal":100,"close_timeout":200,"close_reset":0,"close_hello":1,"close_other":0,
- "uptime":"5m30s"}
-```
-
-## Client Flags
-
-```
-Usage: client -s <address> [flags]
-
-  -s, -server string  Server address (required)
-  -t                  Enable TCP test (default when neither -t nor -u is set)
-  -u                  Enable UDP test (default false)
-  -tcp-port int       Server TCP port (default 8888)
-  -udp-port int       Server UDP port (default 8888)
-  -max int            Max connections to establish (default 10000)
-  -rate int           Connections per second, 0 = unlimited (default 100)
-  -timeout duration   Connection timeout (default 5s)
-  -keepalive duration Heartbeat interval (default 30s)
-  -duration duration  Test duration, 0 = unlimited (default 0)
-  -4                  Force IPv4 only
-  -6                  Force IPv6 only
-  -stop-on-fail int   Stop after N sec peak plateau or N consecutive failures, 0 = never (default 100)
-```
-
-IPv4/IPv6 is auto-detected by default — no flag needed.
-
-## Before Testing
-
-1. **Raise file descriptor limit** (Linux):
-   ```bash
-   ulimit -n 1048576
-   ```
-
-2. **Start with a moderate rate** (e.g. `-rate 100`). Some ISPs throttle connections that ramp up too quickly.
-
-3. **IPv6 is key**: If your home broadband is behind CGNAT (shared IPv4), the IPv4 connection limit is often very low (hundreds). IPv6 typically has no such limit.
-
-4. **Port exhaustion**: A single client can open at most ~28,000 TCP connections due to ephemeral port range limits. For higher counts, run multiple client instances or bind multiple local IPs.
-
-5. **Auto-stop**: The client stops automatically when peak stops growing for N seconds OR N consecutive connection failures occur. Default threshold is 100. Set `-stop-on-fail 0` to disable.
-
-## Building from Source
-
-```bash
-go build -o conncap-server ./cmd/server
-go build -o conncap-client ./cmd/client
-```
-
-## Protocol
-
-Simple text-based protocol, delimited by `\n`:
-
-| Direction | Message | Purpose |
-|-----------|---------|---------|
-| C → S | `HELLO` | TCP handshake |
-| S → C | `OK` | Server acknowledgement |
-| C → S | `PING` | Keepalive |
-| S → C | `PONG` | Keepalive response |
-
-UDP uses `REGISTER` instead of `HELLO` for initial contact.
-
----
-
-# conncap — 连接容量测试工具
-
-TCP + UDP 并发连接数测试工具，用于测试家庭宽带运营商/路由器允许的最大并发连接数。支持 IPv4 和 IPv6（双栈）。
-
-## 架构
-
-```
-[家庭宽带客户端]  ──大量TCP/UDP连接──>  [公网VPS服务端]
-```
-
-- **服务端**：部署在具有公网 IP 的 VPS 上，监听 TCP/UDP 端口，实时统计连接数及峰值，提供 HTTP `/status` 状态接口。
-- **客户端**：运行在家庭网络中，向服务端并发发起大量连接，报告成功/失败/峰值。
+- 服务端运行在公网 VPS 上，负责接收连接并统计当前连接数、峰值和断开原因。
+- 客户端运行在家庭网络、OpenWrt、PC 或其他待测环境中，负责主动发起大量连接。
+- 客户端会自动检测本机常见限制，例如 `ulimit`、`conntrack`、临时端口范围，并在可能影响结果时输出中英文警告。
 
 ## 下载
 
-预编译二进制文件在 `build/` 目录下：
+请到 GitHub Releases 下载对应平台的压缩包。每个压缩包内都包含服务端和客户端两个程序。
 
 | 系统 | 架构 | 文件 |
-|------|------|------|
-| Linux | amd64 | `conncap-server-linux-amd64` / `conncap-client-linux-amd64` |
-| Linux | arm64 | `conncap-server-linux-arm64` / `conncap-client-linux-arm64` |
-| Linux | armv5+ | `conncap-server-linux-arm5` / `conncap-client-linux-arm5` |
-| Linux | mips (大端, softfloat) | `conncap-server-linux-mips` / `conncap-client-linux-mips` |
-| Linux | mipsel (小端, softfloat) | `conncap-server-linux-mipsel` / `conncap-client-linux-mipsel` |
-| macOS | arm64 | `conncap-server-darwin-arm64` / `conncap-client-darwin-arm64` |
-| Windows | amd64 | `conncap-server-windows-amd64.exe` / `conncap-client-windows-amd64.exe` |
+|---|---|---|
+| Linux | x86_64 | `conncap-linux-amd64.tar.gz` |
+| Linux | arm64 | `conncap-linux-arm64.tar.gz` |
+| Linux | ARMv5+ | `conncap-linux-arm5.tar.gz` |
+| Linux | MIPS 大端 | `conncap-linux-mips.tar.gz` |
+| Linux | MIPS 小端 | `conncap-linux-mipsel.tar.gz` |
+| macOS | Apple Silicon | `conncap-darwin-arm64.tar.gz` |
+| Windows | x86_64 | `conncap-windows-amd64.zip` |
 
-所有二进制均为静态编译，无任何运行时依赖。
+OpenWrt 常见架构：
+
+| OpenWrt 架构 | 推荐文件 |
+|---|---|
+| x86_64 软路由 | `conncap-linux-amd64.tar.gz` |
+| aarch64/arm64 | `conncap-linux-arm64.tar.gz` |
+| armv5/armv6/armv7 | `conncap-linux-arm5.tar.gz` |
+| mipsel 小端 | `conncap-linux-mipsel.tar.gz` |
+| mips 大端 | `conncap-linux-mips.tar.gz` |
 
 ## 快速开始
 
-### 1. 启动服务端（在 VPS 上）
+### 1. 在 VPS 上启动服务端
 
 ```bash
-./conncap-server-linux-amd64 --tcp-port 8888 --udp-port 8888 --stats-port 8889
+./conncap-server-linux-amd64
 ```
 
-查看状态：`curl http://<vps_ip>:8889/status`
+默认监听：
 
-### 2. 运行客户端（在家庭网络中）
+| 用途 | 默认端口 |
+|---|---|
+| TCP 测试 | `8888` |
+| UDP 测试 | `8888` |
+| HTTP 状态接口 | 默认关闭，使用 `-stats-port 8889` 开启 |
+
+查看服务端状态：
 
 ```bash
-# 仅 TCP（默认）
+./conncap-server-linux-amd64 -stats-port 8889
+curl http://<vps_ip>:8889/status
+```
+
+### 2. 在家庭网络中运行客户端
+
+TCP 测试（默认）：
+
+```bash
 ./conncap-client-linux-amd64 -s <vps_ip>
+```
 
-# 仅 UDP
+UDP 测试：
+
+```bash
 ./conncap-client-linux-amd64 -s <vps_ip> -u
-
-# TCP + UDP 混合，IPv6
-./conncap-client-linux-amd64 -s <vps_ipv6> -t -u -6
 ```
 
-## 服务端参数
+TCP + UDP 混合测试：
 
-```
-用法: server [flags]
-
-  -host string       监听地址（默认 "::"）
-  -tcp-port int      TCP 端口，0 表示禁用（默认 8888）
-  -udp-port int      UDP 端口，0 表示禁用（默认 8888）
-  -stats-port int    HTTP 状态接口端口，0 表示禁用（默认 8889）
-  -interval int      日志打印间隔秒数（默认 5）
-  -v6-only           仅监听 IPv6（默认双栈 0.0.0.0 + ::）
+```bash
+./conncap-client-linux-amd64 -s <vps_ip> -t -u
 ```
 
-`/status` 返回示例：
-```json
-{"tcp_current":1234,"tcp_peak":2345,"udp_current":567,"udp_peak":890,
- "close_normal":100,"close_timeout":200,"close_reset":0,"close_hello":1,"close_other":0,
- "uptime":"5m30s"}
+强制 IPv6：
+
+```bash
+./conncap-client-linux-amd64 -s <vps_ipv6> -6
+```
+
+强制 IPv4：
+
+```bash
+./conncap-client-linux-amd64 -s <vps_ipv4> -4
 ```
 
 ## 客户端参数
 
-```
-用法: client -s <地址> [flags]
-
-  -s, -server string  服务端地址（必填）
-  -t                  启用 TCP 测试（未指定 -t/-u 时默认 TCP）
-  -u                  启用 UDP 测试（默认 false）
-  -tcp-port int       服务端 TCP 端口（默认 8888）
-  -udp-port int       服务端 UDP 端口（默认 8888）
-  -max int            最大连接目标数（默认 10000）
-  -rate int           每秒新建连接数，0 不限制（默认 100）
-  -timeout duration   连接超时（默认 5s）
-  -keepalive duration 心跳间隔（默认 30s）
-  -duration duration  测试时长，0 不限时（默认 0）
-  -4                  强制仅 IPv4
-  -6                  强制仅 IPv6
-  -stop-on-fail int   peak 停滞 N 秒或连续 N 次失败后自动停止，0 永不停止（默认 100）
+```text
+-s, -server string   服务端地址，必填
+-t                  启用 TCP 测试；如果没有指定 -t 或 -u，默认启用 TCP
+-u                  启用 UDP 测试
+-tcp-port int       服务端 TCP 端口，默认 8888
+-udp-port int       服务端 UDP 端口，默认 8888
+-max int            目标连接数，默认 10000
+-rate int           每秒新建连接数，默认 100，0 表示不限速
+-timeout duration   建连超时，默认 5s
+-keepalive duration 心跳间隔，默认 30s
+-duration duration  测试持续时间，默认 0，表示不限时
+-4                  强制 IPv4
+-6                  强制 IPv6
+-stop-on-fail int   peak 停滞 N 秒或连续 N 次失败后停止，默认 100，0 表示禁用
 ```
 
-默认自动检测 IPv4/IPv6，无需手动指定。
+## 服务端参数
 
-## 测试前注意
+```text
+-host string       监听地址，默认 ::
+-tcp-port int      TCP 端口，默认 8888，0 表示禁用
+-udp-port int      UDP 端口，默认 8888，0 表示禁用
+-stats-port int    HTTP 状态端口，默认 0（关闭），传入端口后启用，例如 8889
+-interval int      日志输出间隔秒数，默认 5
+-v6-only           仅监听 IPv6，默认同时监听 IPv4 和 IPv6
+```
 
-1. **调大文件描述符限制**（Linux）：
-   ```bash
-   ulimit -n 1048576
-   ```
+## 输出怎么看
 
-2. **从较低的速率开始**（如 `-rate 100`），部分运营商检测到连接数过快增长会临时限速。
+客户端示例：
 
-3. **IPv6 是重点**：如果家庭宽带处于 CGNAT（共享 IPv4）环境，IPv4 连接数通常很低（几百个），而 IPv6 一般无此限制——这是本工具的核心使用场景。
+```text
+attempt=3000 success=2995 failed=0 alive=2995 peak=2995
+```
 
-4. **端口耗尽**：单个客户端由于临时端口范围限制，最多约 28000 个 TCP 连接。如需更高数量，可运行多个客户端实例或绑定多个本地 IP。
+| 字段 | 含义 |
+|---|---|
+| `attempt` | 已尝试建立的连接数 |
+| `success` | 累计成功建立的连接数 |
+| `failed` | 累计失败连接数 |
+| `alive` | 当前仍存活的连接数 |
+| `peak` | 测试期间最大同时存活连接数 |
 
-5. **自动停止**：peak 停滞 N 秒不增长 或 连续 N 次建连失败，客户端自动停止。默认阈值 100。设 `-stop-on-fail 0` 禁用。
+通常更应该关注 `peak`，它表示真正同时存在的最大连接数。
 
-## 从源码编译
+服务端状态接口示例：
+
+```json
+{
+  "tcp_current": 1234,
+  "tcp_peak": 2345,
+  "udp_current": 567,
+  "udp_peak": 890,
+  "close_normal": 100,
+  "close_timeout": 200,
+  "close_reset": 0,
+  "close_hello": 1,
+  "close_other": 0,
+  "uptime": "5m30s"
+}
+```
+
+断开原因说明：
+
+| 字段 | 含义 |
+|---|---|
+| `close_normal` | 对端正常关闭 |
+| `close_timeout` | 心跳或读超时 |
+| `close_reset` | TCP RST 断开 |
+| `close_hello` | 握手阶段失败 |
+| `close_other` | 其他错误 |
+
+## 测试前建议
+
+Linux/OpenWrt 上建议先提高文件描述符上限：
 
 ```bash
-go build -o conncap-server ./cmd/server
-go build -o conncap-client ./cmd/client
+ulimit -n 1048576
 ```
 
-## 通信协议
+客户端启动时会自动检查以下限制，并在偏小时输出中英文警告：
 
-简易文本协议，以 `\n` 分隔：
+| 检查项 | 可能影响 |
+|---|---|
+| `Max open files` / `ulimit -n` | 最大可打开 socket 数 |
+| `nf_conntrack_max` | 本机连接跟踪表容量 |
+| `ip_local_port_range` | 单目标 TCP 临时端口数量 |
 
-| 方向 | 消息 | 用途 |
-|------|------|------|
-| C → S | `HELLO` | TCP 客户端握手 |
-| S → C | `OK` | 服务端确认 |
-| C → S | `PING` | 心跳保活 |
-| S → C | `PONG` | 心跳回复 |
+建议从较低速率开始测试，例如：
 
-UDP 初始接触使用 `REGISTER` 替代 `HELLO`。
+```bash
+./conncap-client-linux-amd64 -s <vps_ip> -rate 100
+```
+
+如果需要更快测试，再逐步提高 `-rate`。
+
+## 常见问题
+
+### 为什么我设置 `-max 10000`，但 `peak` 只有几千？
+
+`-max` 是目标连接数，不代表一定能达到。真实结果看 `peak`。如果本机限制、路由器限制、运营商限制或服务端限制较低，`peak` 会停在较低数值。
+
+### 为什么 `success` 很高，但 `alive` 和 `peak` 不涨？
+
+这说明新连接能成功建立，但旧连接正在被关闭或淘汰。此时 `success` 是累计成功数，`alive` 才是当前存活数，`peak` 才是最大并发数。
+
+### 为什么 OpenWrt 本机测试比下级设备低？
+
+OpenWrt 本机运行客户端时，每条连接都会占用 OpenWrt 自己的 fd、socket 内存和本地 TCP 状态。下级设备运行客户端时，OpenWrt 主要负责转发，资源压力不同。请优先查看客户端启动时的限制提示。
+
+### IPv6 会自动使用吗？
+
+默认会自动检测。如果服务端地址是 IPv6，或域名有可用 AAAA 记录并且连通，客户端会自动使用 IPv6。也可以用 `-6` 强制 IPv6。
+
+### UDP 测试是否真的会产生多个会话？
+
+会。客户端会为每个 UDP 会话分配独立源端口，服务端按源 IP 和源端口统计 UDP 会话。

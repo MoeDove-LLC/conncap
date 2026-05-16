@@ -1,0 +1,13 @@
+# Local build outputs
+build/
+dist/
+
+# Binaries
+*.exe
+conncap-server*
+conncap-client*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+RELEASE.md

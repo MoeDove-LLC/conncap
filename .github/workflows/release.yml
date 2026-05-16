@@ -1,0 +1,119 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+            server: conncap-server-linux-amd64
+            client: conncap-client-linux-amd64
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+            server: conncap-server-linux-arm64
+            client: conncap-client-linux-arm64
+          - name: linux-arm5
+            goos: linux
+            goarch: arm
+            goarm: "5"
+            server: conncap-server-linux-arm5
+            client: conncap-client-linux-arm5
+          - name: linux-mips
+            goos: linux
+            goarch: mips
+            gomips: softfloat
+            server: conncap-server-linux-mips
+            client: conncap-client-linux-mips
+          - name: linux-mipsel
+            goos: linux
+            goarch: mipsle
+            gomips: softfloat
+            server: conncap-server-linux-mipsel
+            client: conncap-client-linux-mipsel
+          - name: windows-amd64
+            goos: windows
+            goarch: amd64
+            server: conncap-server-windows-amd64.exe
+            client: conncap-client-windows-amd64.exe
+          - name: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            server: conncap-server-darwin-arm64
+            client: conncap-client-darwin-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist/${{ matrix.name }}
+          go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.name }}/${{ matrix.server }} ./cmd/server
+          go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.name }}/${{ matrix.client }} ./cmd/client
+
+      - name: Package
+        shell: bash
+        run: |
+          cd dist/${{ matrix.name }}
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            zip -9 ../conncap-${{ matrix.name }}.zip ./*
+          else
+            tar -czf ../conncap-${{ matrix.name }}.tar.gz ./*
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conncap-${{ matrix.name }}
+          path: |
+            dist/conncap-${{ matrix.name }}.tar.gz
+            dist/conncap-${{ matrix.name }}.zip
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+          generate_release_notes: true

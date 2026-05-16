@@ -15,5 +15,5 @@ const (
 	DefaultPort     = 8888
 	DefaultTCPPort  = 8888
 	DefaultUDPPort  = 8888
-	DefaultStatsPort = 8889
+	DefaultStatsPort = 0
 )
