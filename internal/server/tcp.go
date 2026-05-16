@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +28,19 @@ func (s *Server) acceptTCP(ln *net.TCPListener) {
 }
 
 func (s *Server) handleTCP(conn *net.TCPConn) {
+	conn.SetDeadline(time.Now().Add(protocol.HelloTimeout * time.Second))
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString(protocol.Delimiter)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	if strings.HasPrefix(strings.TrimSpace(line), protocol.MsgList+" ") {
+		log.Printf("LIST request received, forwarding to IP list handler")
+		s.handleIPListRequest(conn, line)
+		return
+	}
+
 	conn.SetKeepAlive(true)
 	conn.SetKeepAlivePeriod(30 * time.Second)
 
@@ -39,13 +53,6 @@ func (s *Server) handleTCP(conn *net.TCPConn) {
 		conn.Close()
 	}()
 
-	conn.SetDeadline(time.Now().Add(protocol.HelloTimeout * time.Second))
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString(protocol.Delimiter)
-	if err != nil {
-		s.recordClose(err, helloOK)
-		return
-	}
 	if line != protocol.MsgHello+string(protocol.Delimiter) {
 		s.Stats.TCPCloseHello.Add(1)
 		return

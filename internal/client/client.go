@@ -1,13 +1,19 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"conncap/internal/protocol"
 )
 
 type Stats struct {
@@ -20,6 +26,7 @@ type Stats struct {
 
 type Config struct {
 	ServerAddr string
+	BindIPs    []string
 	TCPPort    int
 	UDPPort    int
 	Protocol   string
@@ -37,6 +44,8 @@ type Client struct {
 	Stats      Stats
 	tcpNetwork string
 	udpNetwork string
+	targets    []string
+	bindIPs    []string
 	startTime  time.Time
 	done       chan struct{}
 	doneOnce   sync.Once
@@ -49,14 +58,127 @@ func New(cfg Config) (*Client, error) {
 		done:      make(chan struct{}),
 	}
 
+	if len(cfg.BindIPs) > 0 {
+		for _, raw := range cfg.BindIPs {
+			ip := net.ParseIP(strings.TrimSpace(raw))
+			if ip == nil {
+				return nil, fmt.Errorf("invalid bind-ip: %s / 无效绑定 IP: %s", raw, raw)
+			}
+			c.bindIPs = append(c.bindIPs, ip.String())
+		}
+	}
+
 	tcpNet, udpNet, err := resolveNetworks(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("resolve network: %w", err)
 	}
 	c.tcpNetwork = tcpNet
 	c.udpNetwork = udpNet
+	c.targets = []string{cfg.ServerAddr}
+	if cfg.IPVersion != "4" {
+		if ips := c.fetchServerIPList(); len(ips) > 0 {
+			c.targets = ips
+			c.tcpNetwork = "tcp6"
+			c.udpNetwork = "udp6"
+			log.Printf("server multi-IP list received: %d IPv6 targets", len(ips))
+		} else if c.tcpNetwork == "tcp6" || c.udpNetwork == "udp6" {
+			log.Printf("server did not provide multi-IP list, using single target")
+		}
+	}
 
 	return c, nil
+}
+
+func (c *Client) fetchServerIPList() []string {
+	if c.Config.Max <= 0 {
+		return nil
+	}
+	listTimeout := c.Config.Timeout
+	if listTimeout < 30*time.Second {
+		listTimeout = 30 * time.Second
+	}
+	target := net.JoinHostPort(c.Config.ServerAddr, fmt.Sprintf("%d", c.Config.TCPPort))
+	conn, err := net.DialTimeout(c.tcpNetwork, target, listTimeout)
+	if err != nil {
+		log.Printf("multi-IP LIST dial %s: %v", target, err)
+		return nil
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(listTimeout))
+	if _, err := fmt.Fprintf(conn, "%s %d\n", protocol.MsgList, c.Config.Max); err != nil {
+		log.Printf("multi-IP LIST write: %v", err)
+		return nil
+	}
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString(protocol.Delimiter)
+	if err != nil {
+		log.Printf("multi-IP LIST read header: %v", err)
+		return nil
+	}
+	line = strings.TrimSpace(line)
+	if line == protocol.MsgNoIPList {
+		log.Printf("server returned NOIPLIST (no multi-IP prefix configured or generation failed)")
+		return nil
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 3 && fields[0] == protocol.MsgIPRange {
+		count, err := strconv.Atoi(fields[2])
+		if err != nil || count <= 0 {
+			log.Printf("multi-IP RANGE invalid count: %s", fields[2])
+			return nil
+		}
+		ips, err := generateIPv6Range(fields[1], count)
+		if err != nil {
+			log.Printf("multi-IP RANGE invalid: %v", err)
+			return nil
+		}
+		return ips
+	}
+	if len(fields) != 2 || fields[0] != protocol.MsgIPList {
+		log.Printf("multi-IP LIST unexpected header: %q (fields=%d)", line, len(fields))
+		return nil
+	}
+	count, err := strconv.Atoi(fields[1])
+	if err != nil || count <= 0 {
+		log.Printf("multi-IP LIST invalid count: %s", fields[1])
+		return nil
+	}
+	ips := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		ipLine, err := reader.ReadString(protocol.Delimiter)
+		if err != nil {
+			log.Printf("multi-IP LIST read ip[%d]: %v", i, err)
+			return nil
+		}
+		ip := strings.TrimSpace(ipLine)
+		if net.ParseIP(ip) == nil {
+			log.Printf("multi-IP LIST invalid ip[%d]: %q", i, ip)
+			return nil
+		}
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+func generateIPv6Range(first string, count int) ([]string, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("count must be > 0")
+	}
+	baseIP := net.ParseIP(first)
+	if baseIP == nil || baseIP.To4() != nil {
+		return nil, fmt.Errorf("first IP is not IPv6: %s", first)
+	}
+	base := baseIP.To16()
+	baseInt := new(big.Int).SetBytes(base)
+	ips := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		v := new(big.Int).Add(baseInt, big.NewInt(int64(i)))
+		b := v.Bytes()
+		ip := make(net.IP, net.IPv6len)
+		copy(ip[net.IPv6len-len(b):], b)
+		ips = append(ips, ip.String())
+	}
+	return ips, nil
 }
 
 func resolveNetworks(cfg Config) (string, string, error) {

@@ -19,7 +19,13 @@ func (c *Client) runUDP() error {
 		rateLimiter = ticker.C
 	}
 
-	serverAddr := net.JoinHostPort(c.Config.ServerAddr, fmt.Sprintf("%d", c.Config.UDPPort))
+	targets := c.targets
+	if len(targets) == 0 {
+		targets = []string{c.Config.ServerAddr}
+	}
+	binds := c.bindIPs
+	nextTarget := 0
+	nextBind := 0
 
 	for {
 		select {
@@ -45,18 +51,29 @@ func (c *Client) runUDP() error {
 		}
 		c.Stats.Attempt.Add(1)
 
-		go c.udpSession(network, serverAddr)
+		serverAddr := net.JoinHostPort(targets[nextTarget%len(targets)], fmt.Sprintf("%d", c.Config.UDPPort))
+		nextTarget++
+		var localIP string
+		if len(binds) > 0 {
+			localIP = binds[nextBind%len(binds)]
+			nextBind++
+		}
+		go c.udpSession(network, serverAddr, localIP)
 	}
 }
 
-func (c *Client) udpSession(network, addr string) {
+func (c *Client) udpSession(network, addr, localIP string) {
 	resolved, err := net.ResolveUDPAddr(network, addr)
 	if err != nil {
 		c.Stats.Failed.Add(1)
 		return
 	}
 
-	conn, err := net.DialUDP(network, nil, resolved)
+	var laddr *net.UDPAddr
+	if localIP != "" {
+		laddr = &net.UDPAddr{IP: net.ParseIP(localIP)}
+	}
+	conn, err := net.DialUDP(network, laddr, resolved)
 	if err != nil {
 		c.Stats.Failed.Add(1)
 		return

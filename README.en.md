@@ -61,6 +61,13 @@ Check server status:
 curl http://<vps_ip>:8889/status
 ```
 
+To bind the server to specific listen IPs, pass `-bind-ip` more than once or use a comma-separated list:
+
+```bash
+./conncap-server-linux-amd64 -bind-ip 192.0.2.10 -bind-ip 2001:db8:1::1
+./conncap-server-linux-amd64 -bind-ip 192.0.2.10,2001:db8:1::1
+```
+
 ### 2. Run the client from the network being tested
 
 TCP test, default mode:
@@ -93,10 +100,78 @@ Force IPv4:
 ./conncap-client-linux-amd64 -s <vps_ipv4> -4
 ```
 
+### IPv6 Multi-IP Test
+
+If the VPS has a routed IPv6 prefix, the client can spread connections across multiple IPv6 destination addresses. This helps avoid the single-destination ephemeral port limit and makes higher connection counts observable. This mode is disabled by default and must be enabled manually on the server with `-ipv6-prefix`.
+
+The correct syntax is `-bind-ip <control IPv6 address> -ipv6-prefix <test prefix>`. `-host` is kept only for compatibility with older versions and is not recommended for IPv6 multi-IP tests.
+
+The server needs three things:
+
+- The VPS provider has routed this IPv6 prefix to the current VPS.
+- Linux has `net.ipv6.ip_nonlocal_bind=1` enabled.
+- Linux has an IPv6 local route to `lo` covering the test prefix.
+
+Temporarily enable non-local IPv6 binding:
+
+```bash
+sudo sysctl -w net.ipv6.ip_nonlocal_bind=1
+```
+
+Temporarily add the IPv6 local route:
+
+```bash
+sudo ip -6 route replace local <ipv6_prefix> dev lo
+```
+
+These two commands usually do not survive a reboot. For long-term use, write `net.ipv6.ip_nonlocal_bind=1` to `/etc/sysctl.conf` or `/etc/sysctl.d/*.conf`, and add the local route through your distribution's network configuration, startup script, or a systemd unit.
+
+When starting the server, use `-bind-ip` to specify a specific reachable IPv6 control address on the VPS. Do not use the default `::` address for multi-IP mode:
+
+```bash
+./conncap-server-linux-amd64 -bind-ip <vps_ipv6> -ipv6-prefix 2001:db8:1::/64
+```
+
+For example, if the VPS interface has `fd12:3456:7890:100::a/56`, and the provider really routes `fd12:3456:7890:100::/56` to this VPS, you can use the whole `/56`:
+
+```bash
+sudo sysctl -w net.ipv6.ip_nonlocal_bind=1
+sudo ip -6 route replace local fd12:3456:7890:100::/56 dev lo
+./conncap-server-linux-amd64 -bind-ip fd12:3456:7890:100::a -ipv6-prefix fd12:3456:7890:100::/56
+```
+
+A more conservative option is to use only one `/64` from that allocation:
+
+```bash
+sudo ip -6 route replace local fd12:3456:7890:100::/64 dev lo
+./conncap-server-linux-amd64 -bind-ip fd12:3456:7890:100::a -ipv6-prefix fd12:3456:7890:100::/64
+```
+
+Here `-bind-ip` is the reachable control address used by the client for the initial connection. `-ipv6-prefix` is the range used by the server to generate test destination IPs. The server skips the `-bind-ip` control address to avoid conflicts with dynamic listeners.
+
+If your VPS panel shows `fd12:3456:7890:100::a/56` but you are not sure whether the whole `/56` is routed to this VPS, start with `/64`. Only expand both the local route and `-ipv6-prefix` to `/56` after confirming that the full prefix is usable.
+
+Run the client against that control IPv6 address as usual. The server returns a generated IPv6 target list, and the client automatically round-robins across those targets:
+
+```bash
+./conncap-client-linux-amd64 -s <vps_ipv6> -6 -max 10000
+```
+
+By default the server generates `32` target IPv6 addresses. The control protocol uses a compact `IPRANGE` response, sending only the first IPv6 address and the count. The client generates the full target list locally, so you can increase the target count without transferring a long text list of IP addresses. For example, generate `1024` target IPs:
+
+```bash
+./conncap-server-linux-amd64 -bind-ip <vps_ipv6> -ipv6-prefix 2001:db8:1::/64 -multi-ip-count 1024
+```
+
+Note: larger `-multi-ip-count` values create more listening sockets on the server. With both TCP and UDP enabled, the listener socket count is roughly `multi-ip-count * 2 + control listeners`.
+
+For UDP multi-IP tests, the server creates one listener for each generated IPv6 address so response packets use the same source address that the client targeted. UDP-only multi-IP mode still requires the server TCP port to be reachable, because the client uses a TCP control connection to fetch the target IP list.
+
 ## Client Options
 
 ```text
 -s, -server string   Server address, required
+-bind-ip string      Bind local IP, repeat or comma-separate
 -t                  Enable TCP test; if neither -t nor -u is specified, TCP is enabled by default
 -u                  Enable UDP test
 -tcp-port int       Server TCP port, default 8888
@@ -114,12 +189,15 @@ Force IPv4:
 ## Server Options
 
 ```text
--host string       Listen address, default ::
+-host string       Legacy option: default IPv6 listen address, default ::; prefer -bind-ip for new configurations
+-bind-ip string    Bind listen IP, repeat it or use comma-separated values; when set, only these IPs are listened on
 -tcp-port int      TCP port, default 8888, 0 disables TCP
 -udp-port int      UDP port, default 8888, 0 disables UDP
 -stats-port int    HTTP status port, default 0 (disabled); pass a port such as 8889 to enable it
 -interval int      Log interval in seconds, default 5
 -v6-only           Listen on IPv6 only; default listens on both IPv4 and IPv6
+-ipv6-prefix string Manually enable IPv6 multi-IP testing, for example 2001:db8:1::/64; requires at least one specific IPv6 -bind-ip
+-multi-ip-count int Number of generated IPv6 multi-IP targets, default 32; can be raised to 256, 1024, etc.
 ```
 
 ## Reading Client Output

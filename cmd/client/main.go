@@ -13,10 +13,28 @@ import (
 	"conncap/internal/protocol"
 )
 
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			*f = append(*f, part)
+		}
+	}
+	return nil
+}
+
 func main() {
 	var serverAddr string
 	flag.StringVar(&serverAddr, "s", "", "server address (required)")
 	flag.StringVar(&serverAddr, "server", "", "server address (required)")
+	var bindIPs stringListFlag
+	flag.Var(&bindIPs, "bind-ip", "bind local IP, repeat or comma-separate")
 	tcpPort := flag.Int("tcp-port", protocol.DefaultTCPPort, "server TCP port")
 	udpPort := flag.Int("udp-port", protocol.DefaultUDPPort, "server UDP port")
 	useTCP := flag.Bool("t", false, "enable TCP test")
@@ -79,6 +97,7 @@ func main() {
 
 	cfg := client.Config{
 		ServerAddr: serverAddr,
+		BindIPs:    []string(bindIPs),
 		TCPPort:    *tcpPort,
 		UDPPort:    *udpPort,
 		Protocol:   proto,
@@ -161,7 +180,7 @@ func logSysLimits(targetMax int64, proto string) {
 	} {
 		data, err := os.ReadFile(f)
 		if err == nil {
-			log.Printf("sys: %s = %s", f, data[:len(data)-1])
+			log.Printf("sys: %s = %s", f, strings.TrimSpace(string(data)))
 		}
 	}
 }

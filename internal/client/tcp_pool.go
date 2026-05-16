@@ -23,7 +23,13 @@ func (c *Client) runTCP() error {
 	}
 
 	network := c.tcpNetwork
-	addr := net.JoinHostPort(c.Config.ServerAddr, fmt.Sprintf("%d", c.Config.TCPPort))
+	targets := c.targets
+	if len(targets) == 0 {
+		targets = []string{c.Config.ServerAddr}
+	}
+	binds := c.bindIPs
+	nextTarget := 0
+	nextBind := 0
 
 	for {
 		select {
@@ -49,12 +55,29 @@ func (c *Client) runTCP() error {
 		}
 		c.Stats.Attempt.Add(1)
 
-		go c.tcpConnect(network, addr)
+		addr := net.JoinHostPort(targets[nextTarget%len(targets)], fmt.Sprintf("%d", c.Config.TCPPort))
+		nextTarget++
+		var localIP string
+		if len(binds) > 0 {
+			localIP = binds[nextBind%len(binds)]
+			nextBind++
+		}
+		go c.tcpConnect(network, addr, localIP)
 	}
 }
 
-func (c *Client) tcpConnect(network, addr string) {
-	conn, err := net.DialTimeout(network, addr, c.Config.Timeout)
+func (c *Client) tcpConnect(network, addr, localIP string) {
+	var conn net.Conn
+	var err error
+	if localIP != "" {
+		d := net.Dialer{
+			Timeout:   c.Config.Timeout,
+			LocalAddr: &net.TCPAddr{IP: net.ParseIP(localIP)},
+		}
+		conn, err = d.Dial(network, addr)
+	} else {
+		conn, err = net.DialTimeout(network, addr, c.Config.Timeout)
+	}
 	if err != nil {
 		c.Stats.Failed.Add(1)
 		return
